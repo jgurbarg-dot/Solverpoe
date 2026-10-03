@@ -1,1 +1,188 @@
 
+import streamlit as st
+import sympy as sp
+import pandas as pd
+import io
+
+st.set_page_config(
+    page_title="Programa Ordenador de Ecuaciones (POE)",
+    page_icon="⚙️",
+    layout="wide"
+)
+
+st.title("⚙️ Programa Ordenador de Ecuaciones (POE)")
+st.caption("Clon interactivo para análisis de grados de libertad, secuenciación automática y resolución de balances de materia y energía.")
+
+# 1. ENTRADA DE ECUACIONES
+st.sidebar.header("1. Definición del Sistema")
+default_eqs = (
+    "F1 + F2 = F3\n"
+    "F1 * 0.1 + F2 * 0.4 = F3 * x3\n"
+    "x3 + y3 = 1\n"
+    "F1 = 100"
+)
+raw_eqs = st.sidebar.text_area(
+    "Ingrese las ecuaciones (una por línea):",
+    value=default_eqs,
+    height=180
+)
+
+# Parsing de ecuaciones
+eq_lines = [line.strip() for line in raw_eqs.split("\n") if line.strip()]
+parsed_eqs = []
+parse_errors = []
+
+for i, line in enumerate(eq_lines):
+    try:
+        if "=" in line:
+            parts = line.split("=")
+            if len(parts) == 2:
+                lhs = sp.sympify(parts[0])
+                rhs = sp.sympify(parts[1])
+                parsed_eqs.append(sp.Eq(lhs, rhs))
+            else:
+                parse_errors.append(f"Línea {i+1}: Múltiples signos '=' detectados.")
+        else:
+            expr = sp.sympify(line)
+            parsed_eqs.append(sp.Eq(expr, 0))
+    except Exception as e:
+        parse_errors.append(f"Línea {i+1} ('{line}'): Error de sintaxis - {str(e)}")
+
+if parse_errors:
+    for err in parse_errors:
+        st.error(err)
+
+if parsed_eqs:
+    # Extracción de variables únicas
+    all_symbols = sorted(list(set().union(*[eq.free_symbols for eq in parsed_eqs])), key=lambda s: s.name)
+    var_names = [s.name for s in all_symbols]
+
+    # 2. ESPECIFICACIÓN DE VARIABLES
+    st.sidebar.header("2. Especificación de Datos")
+    known_vars = {}
+    known_selected = st.sidebar.multiselect("Seleccione variables conocidas (Datos):", var_names)
+
+    for var in known_selected:
+        val = st.sidebar.number_input(f"Valor para {var}:", value=1.0000, step=0.1, format="%.4f")
+        known_vars[sp.Symbol(var)] = val
+
+    # 3. ANÁLISIS DE GRADOS DE LIBERTAD (GL)
+    total_vars = len(all_symbols)
+    num_specified = len(known_vars)
+    unknown_vars = [s for s in all_symbols if s not in known_vars]
+    num_unknowns = len(unknown_vars)
+    num_eqs = len(parsed_eqs)
+    dof = num_unknowns - num_eqs
+
+    st.subheader("📌 Análisis del Sistema")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Variables Totales", total_vars)
+    c2.metric("Variables Especificadas", num_specified)
+    c3.metric("Incógnitas", num_unknowns)
+    c4.metric("Grados de Libertad (GL)", dof)
+
+    # Diagnóstico GL
+    if dof > 0:
+        st.warning(f"⚠️ **Sistema Subdeterminado (GL = {dof})**: Debe fijar {dof} variable(s) adicional(es).")
+    elif dof < 0:
+        st.error(f"❌ **Sistema Sobredeterminado (GL = {dof})**: Hay {-dof} ecuación(es) de más o redundantes.")
+    else:
+        st.success("✅ **Sistema Determinado (GL = 0)**: Listo para ordenar y resolver.")
+
+    st.divider()
+
+    # 4. MATRIZ DE INCIDENCIA
+    st.subheader("📊 Matriz de Incidencia (Ecuaciones vs. Incógnitas Libres)")
+    inc_data = []
+    for i, eq in enumerate(parsed_eqs):
+        row = {"Ecuación": f"Eq {i+1}"}
+        eq_vars = eq.free_symbols
+        for sym in unknown_vars:
+            row[sym.name] = 1 if sym in eq_vars else 0
+        inc_data.append(row)
+
+    df_inc = pd.DataFrame(inc_data).set_index("Ecuación")
+    st.dataframe(df_inc, use_container_width=True)
+
+    # 5. SECUENCIACIÓN Y RESOLUCIÓN
+    tab_seq, tab_res = st.tabs(["🔄 Secuencia de Cálculo (POE)", "🚀 Ejecutar y Exportar"])
+
+    with tab_seq:
+        st.subheader("Algoritmo de Secuenciación (Lógica Lee-Christensen-Rudd / Steward)")
+        
+        substitutions = known_vars.copy()
+        remaining_eqs = parsed_eqs.copy()
+        sequence_steps = []
+        step_num = 1
+        stalled = False
+
+        while remaining_eqs:
+            found_step = False
+            for idx, eq in list(enumerate(remaining_eqs)):
+                eq_sub = eq.subs(substitutions)
+                free_vars = eq_sub.free_symbols
+                
+                if len(free_vars) == 1:
+                    target_var = list(free_vars)[0]
+                    sol = sp.solve(eq_sub, target_var)
+                    val = sol[0].evalf() if sol else sp.nan
+                    
+                    sequence_steps.append({
+                        "Paso": step_num,
+                        "Ecuación Evaluada": f"Eq {parsed_eqs.index(eq)+1}",
+                        "Fórmula Reducida": str(eq_sub),
+                        "Variable Resuelta": target_var.name,
+                        "Valor Calculado": f"{float(val):.4f}" if isinstance(val, (int, float, sp.Float)) else str(val)
+                    })
+                    
+                    substitutions[target_var] = val
+                    remaining_eqs.pop(idx)
+                    found_step = True
+                    step_num += 1
+                    break
+                elif len(free_vars) == 0:
+                    remaining_eqs.pop(idx)
+                    found_step = True
+                    break
+
+            if not found_step and remaining_eqs:
+                stalled = True
+                break
+
+        if sequence_steps:
+            st.table(pd.DataFrame(sequence_steps))
+
+        if stalled:
+            st.error("⚠️ **Ciclo Detectado / Sistema Acoplado**: Existen subsistemas simultáneos que requieren selección de variables de rasgado (corte) o un resolvedor matricial simultáneo.")
+
+    with tab_res:
+        st.subheader("Resultados Consolidados del Balance")
+        
+        # Generar DataFrame con todas las variables
+        results = []
+        for sym in all_symbols:
+            val = substitutions.get(sym, "No resuelto")
+            is_specified = sym in known_vars
+            
+            if isinstance(val, (int, float, sp.Float)):
+                val_formatted = f"{float(val):.4f}"
+            else:
+                val_formatted = str(val)
+
+            results.append({
+                "Variable": sym.name,
+                "Estado": "Especificada (Dato)" if is_specified else ("Calculada" if sym in substitutions else "Incierta"),
+                "Valor": val_formatted
+            })
+
+        df_results = pd.DataFrame(results)
+        st.dataframe(df_results, use_container_width=True)
+
+        # Botón para descargar reporte en CSV
+        csv_data = df_results.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Descargar Resultados en CSV",
+            data=csv_data,
+            file_name="reporte_poe_resultados.csv",
+            mime="text/csv"
+        )
