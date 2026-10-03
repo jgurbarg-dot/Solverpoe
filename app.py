@@ -1,6 +1,7 @@
 import streamlit as st
 import sympy as sp
 import pandas as pd
+import itertools
 
 st.set_page_config(
     page_title="Programa Ordenador de Ecuaciones (POE)",
@@ -9,7 +10,7 @@ st.set_page_config(
 )
 
 st.title("⚙️ Programa Ordenador de Ecuaciones (POE)")
-st.caption("Secuenciación automática con reporte nativo, cálculo de Subsistemas/Iteración y resolución exacta.")
+st.caption("Secuenciación automática, cálculo de Subsistemas/Iteración, Memoria de Cálculo y resolución exacta.")
 
 # 1. ENTRADA DE ECUACIONES
 st.sidebar.header("1. Definición del Sistema")
@@ -73,15 +74,12 @@ if parsed_eqs:
     num_eqs = len(parsed_eqs)
     dof = num_unknowns - num_eqs
 
-    # Evaluación Matemática de Dependencia (Rango del Jacobiano)
     dependencia_str = "Independiente"
     try:
         if num_eqs > 0 and num_unknowns > 0:
-            # f(x) = 0
             exprs = [eq[1].lhs - eq[1].rhs for eq in parsed_eqs]
             J = sp.Matrix(exprs).jacobian(unknown_vars)
             
-            # Asignamos valores temporales para evaluar el rango numéricamente sin que trabe Simpy
             temp_subs = known_vars.copy()
             for uv in unknown_vars:
                 temp_subs[uv] = 1.0 
@@ -110,22 +108,23 @@ if parsed_eqs:
     else:
         st.success("✅ **Sistema Determinado (GL = 0)**: Listo para resolver.")
 
-
     # =========================================================================
-    # MOTOR 1: GENERADOR DE SECUENCIA Y REPORTE POE (Rastreo)
+    # MOTOR 1: MODO ITERACIÓN (Corte / Rasgado con ItVer)
     # =========================================================================
-    simulated_subs = known_vars.copy()
-    remaining_eqs_seq = parsed_eqs.copy()
-    sequence_steps = []
+    simulated_subs_iter = known_vars.copy()
+    remaining_eqs_iter = parsed_eqs.copy()
+    sequence_steps_iter = []
+    memoria_iter = []
     
     tear_counter = 0
     ver_counter = 0
+    step_iter = 1
 
-    while remaining_eqs_seq:
+    while remaining_eqs_iter:
         found_step = False
         
-        for idx, (eq_name, eq) in list(enumerate(remaining_eqs_seq)):
-            eq_sub = eq.subs(simulated_subs)
+        for idx, (eq_name, eq) in list(enumerate(remaining_eqs_iter)):
+            eq_sub = eq.subs(simulated_subs_iter)
             free_vars = eq_sub.free_symbols
             
             if len(free_vars) == 1:
@@ -133,48 +132,102 @@ if parsed_eqs:
                 sol = sp.solve(eq_sub, target_var)
                 val = sol[0].evalf() if sol else 1.0
                 
-                sequence_steps.append({
-                    "Bloque": eq_name,
-                    "Resuelve": target_var.name,
-                    "Tipo": "Secuencial",
-                    "POE_Format": f"{eq_name}\n1  {target_var.name}"
-                })
+                sequence_steps_iter.append({"Bloque": eq_name, "Resuelve": target_var.name, "Tipo": "Secuencial", "POE_Format": f"{eq_name}\n1  {target_var.name}"})
+                memoria_iter.append(f"**Paso {step_iter}:** De la `{eq_name}` se despeja de forma directa `{target_var.name}`.")
                 
-                simulated_subs[target_var] = val
-                remaining_eqs_seq.pop(idx)
+                simulated_subs_iter[target_var] = val
+                remaining_eqs_iter.pop(idx)
                 found_step = True
+                step_iter += 1
                 break
                 
             elif len(free_vars) == 0:
-                sequence_steps.append({
-                    "Bloque": eq_name,
-                    "Resuelve": f"Ver{ver_counter}",
-                    "Tipo": "Verificación (Cierra ciclo)",
-                    "POE_Format": f"{eq_name}\n1 Ver{ver_counter}"
-                })
+                sequence_steps_iter.append({"Bloque": eq_name, "Resuelve": f"Ver{ver_counter}", "Tipo": "Verificación", "POE_Format": f"{eq_name}\n1 Ver{ver_counter}"})
+                memoria_iter.append(f"**Paso {step_iter}:** La `{eq_name}` cierra el balance. Se utiliza como Ecuación Verificadora (`Ver{ver_counter}`) para controlar la convergencia del ciclo.")
+                
                 ver_counter += 1
-                remaining_eqs_seq.pop(idx)
+                remaining_eqs_iter.pop(idx)
                 found_step = True
+                step_iter += 1
                 break
 
-        if not found_step and remaining_eqs_seq:
-            sub_remaining_eqs = [eq.subs(simulated_subs) for name, eq in remaining_eqs_seq]
+        if not found_step and remaining_eqs_iter:
+            sub_remaining_eqs = [eq.subs(simulated_subs_iter) for name, eq in remaining_eqs_iter]
             rem_vars = list(set().union(*[eq.free_symbols for eq in sub_remaining_eqs]))
             
             if rem_vars:
                 var_counts = {v: sum(1 for eq in sub_remaining_eqs if v in eq.free_symbols) for v in rem_vars}
                 tear_var = max(var_counts, key=var_counts.get)
                 
-                sequence_steps.append({
-                    "Bloque": f"ItVer{tear_counter}",
-                    "Resuelve": tear_var.name,
-                    "Tipo": "Corte / Rasgado",
-                    "POE_Format": f"ItVer{tear_counter}\n1  {tear_var.name}"
-                })
+                sequence_steps_iter.append({"Bloque": f"ItVer{tear_counter}", "Resuelve": tear_var.name, "Tipo": "Corte (ItVer)", "POE_Format": f"ItVer{tear_counter}\n1  {tear_var.name}"})
+                memoria_iter.append(f"**Paso {step_iter}:** Se detecta un ciclo. Se asume un valor inicial para `{tear_var.name}` convirtiéndola en Variable de Corte (`ItVer{tear_counter}`) para destrabar el sistema.")
                 
-                simulated_subs[tear_var] = 1.0  
+                simulated_subs_iter[tear_var] = 1.0  
                 tear_counter += 1
+                step_iter += 1
             else:
+                break
+
+    # =========================================================================
+    # MOTOR 1B: MODO SUBSISTEMAS (Resolución de bloques en cascada)
+    # =========================================================================
+    simulated_subs_sub = known_vars.copy()
+    remaining_eqs_sub = parsed_eqs.copy()
+    sequence_steps_sub = []
+    memoria_sub = []
+    step_sub = 1
+
+    while remaining_eqs_sub:
+        found_step = False
+        
+        # 1. Ecuaciones directas (1x1)
+        for idx, (eq_name, eq) in list(enumerate(remaining_eqs_sub)):
+            eq_sub = eq.subs(simulated_subs_sub)
+            free_vars = list(eq_sub.free_symbols)
+            
+            if len(free_vars) == 1:
+                target_var = free_vars[0]
+                sol = sp.solve(eq_sub, target_var)
+                val = sol[0].evalf() if sol else 1.0
+                
+                sequence_steps_sub.append({"Bloque": eq_name, "Resuelve": target_var.name, "Tipo": "Secuencial", "POE_Format": f"{eq_name}\n1  {target_var.name}"})
+                memoria_sub.append(f"**Paso {step_sub}:** Resolución directa de `{eq_name}`. Se despeja `{target_var.name}`.")
+                
+                simulated_subs_sub[target_var] = val
+                remaining_eqs_sub.pop(idx)
+                found_step = True
+                step_sub += 1
+                break
+                
+        # 2. Búsqueda de Subsistemas acoplados (NxN)
+        if not found_step and remaining_eqs_sub:
+            for block_size in range(2, len(remaining_eqs_sub) + 1):
+                for combo in itertools.combinations(remaining_eqs_sub, block_size):
+                    combo_eqs = [eq.subs(simulated_subs_sub) for name, eq in combo]
+                    combo_vars = list(set().union(*[e.free_symbols for e in combo_eqs]))
+                    
+                    if len(combo_vars) == block_size:
+                        eq_names = ", ".join([name for name, eq in combo])
+                        var_names = ", ".join([v.name for v in combo_vars])
+                        
+                        poe_lines = [name for name, eq in combo] + [f"1  {v.name}" for v in combo_vars]
+                        
+                        sequence_steps_sub.append({"Bloque": eq_names, "Resuelve": var_names, "Tipo": f"Subsistema {block_size}x{block_size}", "POE_Format": "\n".join(poe_lines)})
+                        memoria_sub.append(f"**Paso {step_sub}:** Se detecta acoplamiento. Se resuelve el subsistema simultáneo formado por `{eq_names}` para hallar las incógnitas `{var_names}`.")
+                        
+                        # Asignar valores temporales para destrabar la matriz visual
+                        for v in combo_vars:
+                            simulated_subs_sub[v] = 1.0
+                        
+                        remaining_eqs_sub = [item for item in remaining_eqs_sub if item not in combo]
+                        found_step = True
+                        step_sub += 1
+                        break
+                if found_step:
+                    break
+                    
+            if not found_step:
+                memoria_sub.append(f"**Paso {step_sub}:** ⚠ No se pudo agrupar el resto de ecuaciones en subsistemas cuadrados perfectos.")
                 break
 
     # =========================================================================
@@ -202,31 +255,48 @@ if parsed_eqs:
             pass
 
     # =========================================================================
-    # DIAGNÓSTICO FINAL (Subsistemas vs Iteración)
+    # DIAGNÓSTICO E INTERFAZ
     # =========================================================================
     tipo_resolucion = "Iteración" if tear_counter > 0 else "Subsistemas"
-    
-    st.info(f"**Modo de Resolución (SH):** {tipo_resolucion} (Variables de corte detectadas: {tear_counter}) | **Estado del Sistema:** {dependencia_str}")
-    
+    st.info(f"**Diagnóstico Primario:** {tipo_resolucion} | **Dependencia:** {dependencia_str}")
     st.divider()
 
-    # =========================================================================
-    # RENDERIZADO VISUAL
-    # =========================================================================
-    tab_seq, tab_reporte, tab_res = st.tabs(["🔄 Matriz y Secuencia", "📄 Reporte Estilo POE", "🚀 Resultados"])
+    tab_seq, tab_reporte, tab_memoria, tab_res = st.tabs(["🔄 Matriz y Secuencia", "📄 Reportes Estilo POE", "📝 Memoria de Cálculo", "🚀 Resultados"])
 
     with tab_seq:
-        st.subheader("Ruta Lógica de Resolución")
-        if sequence_steps:
-            df_seq = pd.DataFrame(sequence_steps)[["Bloque", "Resuelve", "Tipo"]]
-            st.table(df_seq)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Secuencia por Iteración")
+            if sequence_steps_iter:
+                st.dataframe(pd.DataFrame(sequence_steps_iter)[["Bloque", "Resuelve", "Tipo"]], use_container_width=True)
+        with col2:
+            st.subheader("Secuencia por Subsistemas")
+            if sequence_steps_sub:
+                st.dataframe(pd.DataFrame(sequence_steps_sub)[["Bloque", "Resuelve", "Tipo"]], use_container_width=True)
 
     with tab_reporte:
-        st.subheader("Reporte Secuencial (Formato POE)")
-        st.caption("Copia este bloque para pegarlo en tu informe.")
-        poe_text = "\n\n".join([step["POE_Format"] for step in sequence_steps])
-        st.text_area("Salida del POE:", value=poe_text, height=600)
-        st.download_button(label="📄 Descargar reporte.txt", data=poe_text.encode('utf-8'), file_name="reporte_poe.txt", mime="text/plain")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Reporte MODO ITERACIÓN")
+            poe_iter = "\n\n".join([step["POE_Format"] for step in sequence_steps_iter])
+            st.text_area("Copia formato Iteración:", value=poe_iter, height=400)
+            st.download_button("📄 Descargar Iteración.txt", data=poe_iter.encode('utf-8'), file_name="reporte_iteracion.txt")
+        with col2:
+            st.subheader("Reporte MODO SUBSISTEMAS")
+            poe_sub = "\n\n".join([step["POE_Format"] for step in sequence_steps_sub])
+            st.text_area("Copia formato Subsistemas:", value=poe_sub, height=400)
+            st.download_button("📄 Descargar Subsistemas.txt", data=poe_sub.encode('utf-8'), file_name="reporte_subsistemas.txt")
+
+    with tab_memoria:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Memoria Descriptiva (Iteración)")
+            for linea in memoria_iter:
+                st.markdown(linea)
+        with col2:
+            st.subheader("Memoria Descriptiva (Subsistemas)")
+            for linea in memoria_sub:
+                st.markdown(linea)
 
     with tab_res:
         st.subheader("Resultados Consolidados")
@@ -245,14 +315,8 @@ if parsed_eqs:
             else:
                 val_formatted = str(val)
 
-            results.append({
-                "Variable": sym.name,
-                "Estado": "Dato" if is_specified else "Calculada",
-                "Valor": val_formatted
-            })
+            results.append({"Variable": sym.name, "Estado": "Dato" if is_specified else "Calculada", "Valor": val_formatted})
 
         df_results = pd.DataFrame(results)
         st.dataframe(df_results, use_container_width=True)
-        
-        csv_data = df_results.to_csv(index=False).encode('utf-8')
-        st.download_button(label="📥 Descargar Resultados en CSV", data=csv_data, file_name="reporte_poe_resultados.csv", mime="text/csv")
+        st.download_button("📥 Descargar Resultados en CSV", data=df_results.to_csv(index=False).encode('utf-8'), file_name="resultados.csv")
