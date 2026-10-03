@@ -9,7 +9,7 @@ st.set_page_config(
 )
 
 st.title("⚙️ Programa Ordenador de Ecuaciones (POE)")
-st.caption("Secuenciación automática con detección de variables de corte (ItVer), ecuaciones verificadoras (Ver) y reporte nativo.")
+st.caption("Secuenciación automática con reporte nativo y resolución matemática exacta.")
 
 # 1. ENTRADA DE ECUACIONES
 st.sidebar.header("1. Definición del Sistema")
@@ -53,16 +53,17 @@ if parse_errors:
 
 if parsed_eqs:
     # Extracción de variables únicas
-    all_symbols = sorted(list(set().union(*[eq.free_symbols for name, eq in parsed_eqs])), key=lambda s: s.name)
+    all_symbols = sorted(list(set().union(*[eq[1].free_symbols for eq in parsed_eqs])), key=lambda s: s.name)
     var_names = [s.name for s in all_symbols]
 
-    # 2. ESPECIFICACIÓN DE VARIABLES
+    # 2. ESPECIFICACIÓN DE DATOS
     st.sidebar.header("2. Especificación de Datos")
     known_selected = st.sidebar.multiselect("Seleccione variables conocidas (Datos):", var_names)
     
     known_vars = {}
     for var in known_selected:
-        val = st.sidebar.number_input(f"Valor para {var}:", value=1.0000, step=0.1, format="%.4f")
+        # Aumentamos la precisión a 6 decimales para balances rigurosos
+        val = st.sidebar.number_input(f"Valor para {var}:", value=1.0000, step=0.1, format="%.6f")
         known_vars[sp.Symbol(var)] = val
 
     # 3. ANÁLISIS DE GRADOS DE LIBERTAD (GL)
@@ -76,42 +77,42 @@ if parsed_eqs:
     st.subheader("📌 Análisis del Sistema")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Variables Totales", total_vars)
-    c2.metric("Variables Especificadas (Datos)", num_specified)
+    c2.metric("Datos", num_specified)
     c3.metric("Incógnitas Libres", num_unknowns)
     c4.metric("Grados de Libertad (GL)", dof)
 
     if dof > 0:
-        st.warning(f"⚠️ **Sistema Subdeterminado (GL = {dof})**: Faltan especificar {dof} variable(s).")
+        st.warning(f"⚠️️ **Sistema Subdeterminado (GL = {dof})**: Faltan especificar {dof} variable(s).")
     elif dof < 0:
         st.error(f"❌ **Sistema Sobredeterminado (GL = {dof})**: Sobran {-dof} ecuación(es).")
     else:
-        st.success("✅ **Sistema Determinado (GL = 0)**: Listo para ordenar.")
+        st.success("✅ **Sistema Determinado (GL = 0)**: Listo para resolver.")
 
     st.divider()
 
-    # 4. ALGORITMO DE SECUENCIACIÓN, RASGADO Y VERIFICACIÓN
     tab_seq, tab_reporte, tab_res = st.tabs(["🔄 Matriz y Secuencia", "📄 Reporte Estilo POE", "🚀 Resultados"])
 
-    substitutions = known_vars.copy()
-    remaining_eqs = parsed_eqs.copy()
+    # =========================================================================
+    # MOTOR 1: GENERADOR DE SECUENCIA Y REPORTE POE (Rastreo)
+    # =========================================================================
+    simulated_subs = known_vars.copy()
+    remaining_eqs_seq = parsed_eqs.copy()
     sequence_steps = []
     
     tear_counter = 0
     ver_counter = 0
 
-    while remaining_eqs:
+    while remaining_eqs_seq:
         found_step = False
         
-        # Búsqueda secuencial
-        for idx, (eq_name, eq) in list(enumerate(remaining_eqs)):
-            eq_sub = eq.subs(substitutions)
+        for idx, (eq_name, eq) in list(enumerate(remaining_eqs_seq)):
+            eq_sub = eq.subs(simulated_subs)
             free_vars = eq_sub.free_symbols
             
-            # Caso 1: Una incógnita -> Se calcula la variable
             if len(free_vars) == 1:
                 target_var = list(free_vars)[0]
                 sol = sp.solve(eq_sub, target_var)
-                val = sol[0].evalf() if sol else sp.nan
+                val = sol[0].evalf() if sol else 1.0
                 
                 sequence_steps.append({
                     "Bloque": eq_name,
@@ -120,12 +121,11 @@ if parsed_eqs:
                     "POE_Format": f"{eq_name}\n1  {target_var.name}"
                 })
                 
-                substitutions[target_var] = val
-                remaining_eqs.pop(idx)
+                simulated_subs[target_var] = val
+                remaining_eqs_seq.pop(idx)
                 found_step = True
                 break
                 
-            # Caso 2: Cero incógnitas -> Ecuación Verificadora que cierra un ciclo
             elif len(free_vars) == 0:
                 sequence_steps.append({
                     "Bloque": eq_name,
@@ -134,17 +134,15 @@ if parsed_eqs:
                     "POE_Format": f"{eq_name}\n1 Ver{ver_counter}"
                 })
                 ver_counter += 1
-                remaining_eqs.pop(idx)
+                remaining_eqs_seq.pop(idx)
                 found_step = True
                 break
 
-        # Caso 3: Atasco por ciclo -> Selección de Variable de Corte (ItVer)
-        if not found_step and remaining_eqs:
-            sub_remaining_eqs = [eq.subs(substitutions) for name, eq in remaining_eqs]
+        if not found_step and remaining_eqs_seq:
+            sub_remaining_eqs = [eq.subs(simulated_subs) for name, eq in remaining_eqs_seq]
             rem_vars = list(set().union(*[eq.free_symbols for eq in sub_remaining_eqs]))
             
             if rem_vars:
-                # Heurística: Elegir la variable que más se repite en el subsistema acoplado
                 var_counts = {v: sum(1 for eq in sub_remaining_eqs if v in eq.free_symbols) for v in rem_vars}
                 tear_var = max(var_counts, key=var_counts.get)
                 
@@ -155,43 +153,64 @@ if parsed_eqs:
                     "POE_Format": f"ItVer{tear_counter}\n1  {tear_var.name}"
                 })
                 
-                # Asignar valor ficticio para continuar descifrando la ruta secuencial
-                substitutions[tear_var] = 1.0  
+                # Esto es un señuelo numérico solo para destrabar el mapa de secuencia.
+                simulated_subs[tear_var] = 1.0  
                 tear_counter += 1
             else:
                 break
 
-    # Pestaña 1: Visualización de la secuencia en tabla
+    # =========================================================================
+    # MOTOR 2: RESOLUCIÓN MATEMÁTICA EXACTA (Para la tabla final)
+    # =========================================================================
+    real_subs = known_vars.copy()
+    eqs_for_solve = [eq[1].subs(real_subs) for eq in parsed_eqs]
+    vars_to_solve = [s for s in all_symbols if s not in real_subs]
+    
+    calc_success = False
+    
+    if dof == 0:
+        try:
+            # Resuelve el sistema real en bloque sin las asignaciones artificiales
+            sols = sp.solve(eqs_for_solve, vars_to_solve, dict=True)
+            if sols:
+                sol_dict = sols[0]
+                for var_sym, val_expr in sol_dict.items():
+                    try:
+                        val_eval = val_expr.evalf() if hasattr(val_expr, 'evalf') else val_expr
+                        real_subs[var_sym] = val_eval
+                    except:
+                        real_subs[var_sym] = val_expr
+                calc_success = True
+        except Exception as e:
+            st.error(f"Error en resolución matemática exacta: {str(e)}")
+
+    # =========================================================================
+    # RENDERIZADO VISUAL
+    # =========================================================================
     with tab_seq:
         st.subheader("Ruta Lógica de Resolución")
         if sequence_steps:
             df_seq = pd.DataFrame(sequence_steps)[["Bloque", "Resuelve", "Tipo"]]
             st.table(df_seq)
 
-    # Pestaña 2: Reporte idéntico al POE (Formato de texto)
     with tab_reporte:
         st.subheader("Reporte Secuencial (Formato POE)")
-        st.caption("Salida de texto puro con la secuencia de cálculo, variables de corte y verificadoras.")
-        
+        st.caption("Copia este bloque para pegarlo en tu informe.")
         poe_text = "\n\n".join([step["POE_Format"] for step in sequence_steps])
-        
-        st.text_area("Copia este bloque:", value=poe_text, height=500)
-        
-        st.download_button(
-            label="📄 Descargar reporte.txt",
-            data=poe_text.encode('utf-8'),
-            file_name="reporte_poe.txt",
-            mime="text/plain"
-        )
+        st.text_area("Salida del POE:", value=poe_text, height=600)
+        st.download_button(label="📄 Descargar reporte.txt", data=poe_text.encode('utf-8'), file_name="reporte_poe.txt", mime="text/plain")
 
-    # Pestaña 3: Tabla de resultados finales
     with tab_res:
         st.subheader("Resultados Consolidados")
-        st.info("Nota: Si existen variables iterativas (ItVer), sus valores se asumieron temporalmente como 1.0 para definir el orden. El programa POE real utiliza algoritmos numéricos para encontrar el valor exacto de convergencia.")
+        if not calc_success and dof == 0:
+            st.warning("No se pudo calcular numéricamente el sistema completo. Revisa si hay ecuaciones o datos redundantes.")
+        elif dof != 0:
+            st.warning("Los resultados completos solo se muestran cuando GL = 0.")
         
         results = []
         for sym in all_symbols:
-            val = substitutions.get(sym, "No resuelto")
+            # Aquí llamamos a real_subs (los resultados verídicos del motor 2)
+            val = real_subs.get(sym, "No resuelto")
             is_specified = sym in known_vars
             
             if isinstance(val, (int, float, sp.Float)):
@@ -201,9 +220,12 @@ if parsed_eqs:
 
             results.append({
                 "Variable": sym.name,
-                "Estado": "Dato" if is_specified else "Calculada / Asumida",
+                "Estado": "Dato" if is_specified else "Calculada",
                 "Valor": val_formatted
             })
 
         df_results = pd.DataFrame(results)
         st.dataframe(df_results, use_container_width=True)
+        
+        csv_data = df_results.to_csv(index=False).encode('utf-8')
+        st.download_button(label="📥 Descargar Resultados en CSV", data=csv_data, file_name="reporte_poe_resultados.csv", mime="text/csv")
