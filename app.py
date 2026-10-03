@@ -1,8 +1,6 @@
-
 import streamlit as st
 import sympy as sp
 import pandas as pd
-import io
 
 st.set_page_config(
     page_title="Programa Ordenador de Ecuaciones (POE)",
@@ -11,7 +9,7 @@ st.set_page_config(
 )
 
 st.title("⚙️ Programa Ordenador de Ecuaciones (POE)")
-st.caption("Clon interactivo para análisis de grados de libertad, secuenciación automática y resolución de balances de materia y energía.")
+st.caption("Análisis de grados de libertad, secuenciación automática, detección de variables de corte y resolución de balances.")
 
 # 1. ENTRADA DE ECUACIONES
 st.sidebar.header("1. Definición del Sistema")
@@ -59,9 +57,9 @@ if parsed_eqs:
 
     # 2. ESPECIFICACIÓN DE VARIABLES
     st.sidebar.header("2. Especificación de Datos")
-    known_vars = {}
     known_selected = st.sidebar.multiselect("Seleccione variables conocidas (Datos):", var_names)
-
+    
+    known_vars = {}
     for var in known_selected:
         val = st.sidebar.number_input(f"Valor para {var}:", value=1.0000, step=0.1, format="%.4f")
         known_vars[sp.Symbol(var)] = val
@@ -104,61 +102,99 @@ if parsed_eqs:
     df_inc = pd.DataFrame(inc_data).set_index("Ecuación")
     st.dataframe(df_inc, use_container_width=True)
 
-    # 5. SECUENCIACIÓN Y RESOLUCIÓN
-    tab_seq, tab_res = st.tabs(["🔄 Secuencia de Cálculo (POE)", "🚀 Ejecutar y Exportar"])
+    # 5. SECUENCIACIÓN Y RESOLUCIÓN CON DETECCIÓN DE CORTE
+    tab_seq, tab_res = st.tabs(["🔄 Secuencia de Cálculo y Rasgado", "🚀 Ejecutar y Exportar"])
 
-    with tab_seq:
-        st.subheader("Algoritmo de Secuenciación (Lógica Lee-Christensen-Rudd / Steward)")
-        
-        substitutions = known_vars.copy()
-        remaining_eqs = parsed_eqs.copy()
-        sequence_steps = []
-        step_num = 1
-        stalled = False
+    substitutions = known_vars.copy()
+    remaining_eqs = parsed_eqs.copy()
+    sequence_steps = []
+    step_num = 1
+    stalled = False
 
-        while remaining_eqs:
-            found_step = False
-            for idx, eq in list(enumerate(remaining_eqs)):
-                eq_sub = eq.subs(substitutions)
-                free_vars = eq_sub.free_symbols
+    # Paso secuencial acyclico (Lee-Christensen-Rudd / Steward)
+    while remaining_eqs:
+        found_step = False
+        for idx, eq in list(enumerate(remaining_eqs)):
+            eq_sub = eq.subs(substitutions)
+            free_vars = eq_sub.free_symbols
+            
+            if len(free_vars) == 1:
+                target_var = list(free_vars)[0]
+                sol = sp.solve(eq_sub, target_var)
+                val = sol[0].evalf() if sol else sp.nan
                 
-                if len(free_vars) == 1:
-                    target_var = list(free_vars)[0]
-                    sol = sp.solve(eq_sub, target_var)
-                    val = sol[0].evalf() if sol else sp.nan
-                    
-                    sequence_steps.append({
-                        "Paso": step_num,
-                        "Ecuación Evaluada": f"Eq {parsed_eqs.index(eq)+1}",
-                        "Fórmula Reducida": str(eq_sub),
-                        "Variable Resuelta": target_var.name,
-                        "Valor Calculado": f"{float(val):.4f}" if isinstance(val, (int, float, sp.Float)) else str(val)
-                    })
-                    
-                    substitutions[target_var] = val
-                    remaining_eqs.pop(idx)
-                    found_step = True
-                    step_num += 1
-                    break
-                elif len(free_vars) == 0:
-                    remaining_eqs.pop(idx)
-                    found_step = True
-                    break
-
-            if not found_step and remaining_eqs:
-                stalled = True
+                sequence_steps.append({
+                    "Paso": step_num,
+                    "Tipo": "Secuencial",
+                    "Ecuación Evaluada": f"Eq {parsed_eqs.index(eq)+1}",
+                    "Variable Resuelta": target_var.name,
+                    "Valor Calculado": f"{float(val):.4f}" if isinstance(val, (int, float, sp.Float)) else str(val)
+                })
+                
+                substitutions[target_var] = val
+                remaining_eqs.pop(idx)
+                found_step = True
+                step_num += 1
+                break
+            elif len(free_vars) == 0:
+                remaining_eqs.pop(idx)
+                found_step = True
                 break
 
+        if not found_step and remaining_eqs:
+            stalled = True
+            break
+
+    with tab_seq:
+        st.subheader("Secuencia de Resolución Determinada")
         if sequence_steps:
             st.table(pd.DataFrame(sequence_steps))
 
         if stalled:
-            st.error("⚠️ **Ciclo Detectado / Sistema Acoplado**: Existen subsistemas simultáneos que requieren selección de variables de rasgado (corte) o un resolvedor matricial simultáneo.")
+            # Análisis del subsistema acoplado
+            sub_remaining_eqs = [eq.subs(substitutions) for eq in remaining_eqs]
+            rem_vars = sorted(list(set().union(*[eq.free_symbols for eq in sub_remaining_eqs])), key=lambda s: s.name)
+            
+            # Ranking de candidatos a variable de corte (frecuencia en el subsistema)
+            var_counts = {v.name: sum(1 for eq in sub_remaining_eqs if v in eq.free_symbols) for v in rem_vars}
+            sorted_candidates = sorted(var_counts.items(), key=lambda x: x[1], reverse=True)
+
+            st.warning(f"⚠️ **Ciclo Detectado / Sistema Acoplado**: Quedan {len(sub_remaining_eqs)} ecuaciones simultáneas y {len(rem_vars)} incógnitas por resolver.")
+            
+            st.markdown("### ✂️ Candidatas Recomendadas para Variable de Corte (Rasgado)")
+            st.write("Si deseas romper el ciclo manualmente asignando un valor estimado, las mejores opciones (mayor impacto de desacoplamiento) son:")
+            
+            df_cand = pd.DataFrame(sorted_candidates, columns=["Variable Recomendada de Corte", "Frecuencia en Subsistema Acoplado"])
+            st.dataframe(df_cand, use_container_width=True)
+
+            # Resolución simultánea automática del subsistema acoplado
+            st.markdown("### ⚡ Resolución Simultánea del Subsistema Acoplado")
+            try:
+                simultaneous_sols = sp.solve(sub_remaining_eqs, rem_vars, dict=True)
+                if simultaneous_sols:
+                    sol_dict = simultaneous_sols[0]
+                    sim_steps = []
+                    for var_sym, val_expr in sol_dict.items():
+                        val_eval = val_expr.evalf() if hasattr(val_expr, 'evalf') else val_expr
+                        substitutions[var_sym] = val_eval
+                        sim_steps.append({
+                            "Paso": f"Simultáneo {step_num}",
+                            "Tipo": "Acoplado (Simultáneo)",
+                            "Ecuación Evaluada": "Subsistema Completo",
+                            "Variable Resuelta": var_sym.name,
+                            "Valor Calculado": f"{float(val_eval):.4f}" if isinstance(val_eval, (int, float, sp.Float)) else str(val_eval)
+                        })
+                        step_num += 1
+                    st.success("✅ **El subsistema acoplado fue resuelto simultáneamente con éxito.**")
+                    st.table(pd.DataFrame(sim_steps))
+                else:
+                    st.error("No se pudo resolver simbólicamente el subsistema. Selecciona una de las variables recomendadas e ingresa un valor hipotético en el menú lateral.")
+            except Exception as e:
+                st.error(f"Error al resolver el subsistema simultáneo: {str(e)}")
 
     with tab_res:
         st.subheader("Resultados Consolidados del Balance")
         
-        # Generar DataFrame con todas las variables
         results = []
         for sym in all_symbols:
             val = substitutions.get(sym, "No resuelto")
@@ -178,7 +214,6 @@ if parsed_eqs:
         df_results = pd.DataFrame(results)
         st.dataframe(df_results, use_container_width=True)
 
-        # Botón para descargar reporte en CSV
         csv_data = df_results.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="📥 Descargar Resultados en CSV",
