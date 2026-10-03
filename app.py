@@ -169,13 +169,14 @@ if parsed_eqs:
                 break
 
     # =========================================================================
-    # MOTOR 1B: MODO SUBSISTEMAS (Resolución de bloques en cascada)
+    # MOTOR 1B: MODO SUBSISTEMAS (Resolución de bloques en cascada con ItVer)
     # =========================================================================
     simulated_subs_sub = known_vars.copy()
     remaining_eqs_sub = parsed_eqs.copy()
     sequence_steps_sub = []
     memoria_sub = []
     step_sub = 1
+    sub_tear_counter = 0
 
     while remaining_eqs_sub:
         found_step = False
@@ -210,16 +211,36 @@ if parsed_eqs:
                         eq_names = ", ".join([name for name, eq in combo])
                         var_names = ", ".join([v.name for v in combo_vars])
                         
-                        poe_lines = [name for name, eq in combo] + [f"1  {v.name}" for v in combo_vars]
+                        # FORMATO ESTILO ITVER PARA DELIMITAR SUBSISTEMAS EN POE
+                        poe_lines = []
+                        # Abrir bloque con ItVer
+                        tear_v = combo_vars[0]
+                        poe_lines.append(f"ItVer{sub_tear_counter}\n1  {tear_v.name}")
                         
-                        sequence_steps_sub.append({"Bloque": eq_names, "Resuelve": var_names, "Tipo": f"Subsistema {block_size}x{block_size}", "POE_Format": "\n".join(poe_lines)})
-                        memoria_sub.append(f"**Paso {step_sub}:** Se detecta acoplamiento. Se resuelve el subsistema simultáneo formado por `{eq_names}` para hallar las incógnitas `{var_names}`.")
+                        # Ecuaciones intermedias
+                        rem_vars = combo_vars[1:]
+                        for j in range(block_size - 1):
+                            poe_lines.append(f"{combo[j][0]}\n1  {rem_vars[j].name}")
+                            
+                        # Cerrar bloque con Verificador
+                        poe_lines.append(f"{combo[-1][0]}\n1 Ver{sub_tear_counter}")
                         
-                        # Asignar valores temporales para destrabar la matriz visual
+                        formato_poe_bloque = "\n\n".join(poe_lines)
+                        
+                        sequence_steps_sub.append({
+                            "Bloque": eq_names, 
+                            "Resuelve": var_names, 
+                            "Tipo": f"Subsistema {block_size}x{block_size}", 
+                            "POE_Format": formato_poe_bloque
+                        })
+                        memoria_sub.append(f"**Paso {step_sub}:** Se detecta acoplamiento. Se resuelve el subsistema simultáneo formado por `{eq_names}` para hallar las incógnitas `{var_names}`. *(El reporte de texto lo estructura con `ItVer{sub_tear_counter}` y `Ver{sub_tear_counter}` para que POE identifique los límites del bloque)*.")
+                        
+                        # Asignar valores temporales para continuar descifrando la ruta
                         for v in combo_vars:
                             simulated_subs_sub[v] = 1.0
                         
                         remaining_eqs_sub = [item for item in remaining_eqs_sub if item not in combo]
+                        sub_tear_counter += 1
                         found_step = True
                         step_sub += 1
                         break
