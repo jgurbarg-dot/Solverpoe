@@ -9,7 +9,7 @@ st.set_page_config(
 )
 
 st.title("⚙️ Programa Ordenador de Ecuaciones (POE)")
-st.caption("Secuenciación automática con reporte nativo y resolución matemática exacta.")
+st.caption("Secuenciación automática con reporte nativo, cálculo de Subsistemas/Iteración y resolución exacta.")
 
 # 1. ENTRADA DE ECUACIONES
 st.sidebar.header("1. Definición del Sistema")
@@ -62,17 +62,39 @@ if parsed_eqs:
     
     known_vars = {}
     for var in known_selected:
-        # Aumentamos la precisión a 6 decimales para balances rigurosos
         val = st.sidebar.number_input(f"Valor para {var}:", value=1.0000, step=0.1, format="%.6f")
         known_vars[sp.Symbol(var)] = val
 
-    # 3. ANÁLISIS DE GRADOS DE LIBERTAD (GL)
+    # 3. ANÁLISIS DE GRADOS DE LIBERTAD (GL) Y DEPENDENCIA
     total_vars = len(all_symbols)
     num_specified = len(known_vars)
     unknown_vars = [s for s in all_symbols if s not in known_vars]
     num_unknowns = len(unknown_vars)
     num_eqs = len(parsed_eqs)
     dof = num_unknowns - num_eqs
+
+    # Evaluación Matemática de Dependencia (Rango del Jacobiano)
+    dependencia_str = "Independiente"
+    try:
+        if num_eqs > 0 and num_unknowns > 0:
+            # f(x) = 0
+            exprs = [eq[1].lhs - eq[1].rhs for eq in parsed_eqs]
+            J = sp.Matrix(exprs).jacobian(unknown_vars)
+            
+            # Asignamos valores temporales para evaluar el rango numéricamente sin que trabe Simpy
+            temp_subs = known_vars.copy()
+            for uv in unknown_vars:
+                temp_subs[uv] = 1.0 
+                
+            J_num = J.subs(temp_subs)
+            rango = J_num.rank()
+            
+            if rango < num_eqs:
+                dependencia_str = "Dependiente (Existen ecuaciones redundantes)"
+        elif num_eqs > num_unknowns:
+             dependencia_str = "Dependiente (Sistema Sobredeterminado)"
+    except Exception:
+        dependencia_str = "No evaluado"
 
     st.subheader("📌 Análisis del Sistema")
     c1, c2, c3, c4 = st.columns(4)
@@ -82,15 +104,12 @@ if parsed_eqs:
     c4.metric("Grados de Libertad (GL)", dof)
 
     if dof > 0:
-        st.warning(f"⚠️️ **Sistema Subdeterminado (GL = {dof})**: Faltan especificar {dof} variable(s).")
+        st.warning(f"⚠ **Sistema Subdeterminado (GL = {dof})**: Faltan especificar {dof} variable(s).")
     elif dof < 0:
         st.error(f"❌ **Sistema Sobredeterminado (GL = {dof})**: Sobran {-dof} ecuación(es).")
     else:
         st.success("✅ **Sistema Determinado (GL = 0)**: Listo para resolver.")
 
-    st.divider()
-
-    tab_seq, tab_reporte, tab_res = st.tabs(["🔄 Matriz y Secuencia", "📄 Reporte Estilo POE", "🚀 Resultados"])
 
     # =========================================================================
     # MOTOR 1: GENERADOR DE SECUENCIA Y REPORTE POE (Rastreo)
@@ -153,7 +172,6 @@ if parsed_eqs:
                     "POE_Format": f"ItVer{tear_counter}\n1  {tear_var.name}"
                 })
                 
-                # Esto es un señuelo numérico solo para destrabar el mapa de secuencia.
                 simulated_subs[tear_var] = 1.0  
                 tear_counter += 1
             else:
@@ -170,7 +188,6 @@ if parsed_eqs:
     
     if dof == 0:
         try:
-            # Resuelve el sistema real en bloque sin las asignaciones artificiales
             sols = sp.solve(eqs_for_solve, vars_to_solve, dict=True)
             if sols:
                 sol_dict = sols[0]
@@ -181,12 +198,23 @@ if parsed_eqs:
                     except:
                         real_subs[var_sym] = val_expr
                 calc_success = True
-        except Exception as e:
-            st.error(f"Error en resolución matemática exacta: {str(e)}")
+        except Exception:
+            pass
+
+    # =========================================================================
+    # DIAGNÓSTICO FINAL (Subsistemas vs Iteración)
+    # =========================================================================
+    tipo_resolucion = "Iteración" if tear_counter > 0 else "Subsistemas"
+    
+    st.info(f"**Modo de Resolución (SH):** {tipo_resolucion} (Variables de corte detectadas: {tear_counter}) | **Estado del Sistema:** {dependencia_str}")
+    
+    st.divider()
 
     # =========================================================================
     # RENDERIZADO VISUAL
     # =========================================================================
+    tab_seq, tab_reporte, tab_res = st.tabs(["🔄 Matriz y Secuencia", "📄 Reporte Estilo POE", "🚀 Resultados"])
+
     with tab_seq:
         st.subheader("Ruta Lógica de Resolución")
         if sequence_steps:
@@ -209,7 +237,6 @@ if parsed_eqs:
         
         results = []
         for sym in all_symbols:
-            # Aquí llamamos a real_subs (los resultados verídicos del motor 2)
             val = real_subs.get(sym, "No resuelto")
             is_specified = sym in known_vars
             
