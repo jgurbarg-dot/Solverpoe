@@ -304,15 +304,70 @@ if parsed_eqs:
                         st.warning(
                             "El método convergió a un punto, pero hay un error residual alto. "
                             "Esto significa que los Datos ingresados podrían estar forzando un escenario "
-                            "termodVeo que estás armando un secuenciador de ecuaciones (POE) en Streamlit con lógica de cortes y subsistemas, excelente para resolver balances de materia y flujos de procesos. 
+                            "termodinámicamente imposible bajo las restricciones dadas."
+                        )
+                except Exception as e:
+                    st.error(f"Error crítico en la ejecución numérica: {str(e)}")
 
-Tu mensaje se cortó justo al final ("a ese codigo modificarle..."). **¿Qué cambio específico o nueva funcionalidad necesitas aplicarle?**
+    # TABS DE VISUALIZACIÓN
+    tab_seq, tab_reporte, tab_memoria, tab_res = st.tabs([
+        "🔄 Matrices",
+        "📄 Reportes POE",
+        "📝 Memoria",
+        "🚀 Resultados numéricos",
+    ])
 
-Para orientarnos, acá te dejo algunas cosas que podríamos ajustarle según el enfoque que le estés dando:
+    with tab_seq:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Secuencia por Iteración")
+            if seq_iter:
+                st.dataframe(
+                    pd.DataFrame(seq_iter)[["Bloque", "Resuelve", "Tipo"]],
+                    use_container_width=True,
+                )
+        with col2:
+            st.subheader("Secuencia por Subsistemas")
+            if seq_sub:
+                st.dataframe(
+                    pd.DataFrame(seq_sub)[["Bloque", "Resuelve", "Tipo"]],
+                    use_container_width=True,
+                )
 
-*   **Parseo y Termodinámica:** ¿Querés que el sistema reconozca variables de estado adicionales (como Temperatura o Presión) y les asigne límites (bounds) distintos a los de las fracciones molares ($x, y, z$) o caudales ($F$)?
-*   **Gestión de Datos:** ¿Necesitás conectar el output numérico o la memoria de cálculo para guardarlos en una base de datos (como Firestore) o exportarlos como un reporte?
-*   **Robustez del Solver:** ¿El `least_squares` se está quedando trabado en mínimos locales con algún sistema de ecuaciones fuertemente no lineal o iterativo?
-*   **Interfaz de Usuario:** ¿Querés reestructurar las pestañas o agregar métricas de rendimiento del cálculo?
+    with tab_reporte:
+        col1, col2 = st.columns(2)
+        with col1:
+            poe_iter = "\n\n".join([step["POE_Format"] for step in seq_iter])
+            st.text_area("Copia formato Iteración:", value=poe_iter, height=400)
+        with col2:
+            poe_sub = "\n\n".join([step["POE_Format"] for step in seq_sub])
+            st.text_area("Copia formato Subsistemas:", value=poe_sub, height=400)
 
-Comentame cuál es el objetivo o el error que te está arrojando y rearmamos esa parte del código.
+    with tab_memoria:
+        col1, col2 = st.columns(2)
+        with col1:
+            for linea in mem_iter:
+                st.markdown(linea)
+        with col2:
+            for linea in mem_sub:
+                st.markdown(linea)
+
+    with tab_res:
+        st.subheader("Valores Numéricos de las Variables")
+        results = []
+        for sym in all_symbols:
+            val = resultados_reales.get(sym, "Pendiente de ejecutar")
+            is_specified = sym in known_vars
+            val_formatted = (
+                f"{float(val):.4f}"
+                if isinstance(val, (int, float, sp.Float, np.number))
+                else str(val)
+            )
+            results.append({
+                "Variable": sym.name,
+                "Estado": "Dato" if is_specified else "Calculada",
+                "Valor": val_formatted,
+            })
+
+        df_results = pd.DataFrame(results)
+        st.dataframe(df_results, use_container_width=True)
