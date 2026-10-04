@@ -301,11 +301,28 @@ if parsed_eqs:
                         solve_success = True
                         st.success("¡Sistema resuelto con éxito respetando las restricciones físicas!")
                     else:
+                        for i, sym in enumerate(vars_to_solve):
+                            resultados_reales[sym] = sol.x[i]
+                            
                         st.warning(
                             "El método convergió a un punto, pero hay un error residual alto. "
                             "Esto significa que los Datos ingresados podrían estar forzando un escenario "
                             "termodinámicamente imposible bajo las restricciones dadas."
                         )
+                        
+                        # NUEVO: Diagnóstico de ecuaciones fallidas
+                        st.error("🔍 **Diagnóstico de Fallo en el Balance:**")
+                        st.write("Las siguientes ecuaciones no lograron igualarse a cero (lado izquierdo - lado derecho):")
+                        
+                        residuos_df = []
+                        for eq_obj, residuo in zip(parsed_eqs, sol.fun):
+                            residuos_df.append({
+                                "Ecuación": eq_obj[0],
+                                "Expresión evaluada": str(eq_obj[1]),
+                                "Diferencia (Error)": f"{residuo:.6f}"
+                            })
+                        
+                        st.dataframe(pd.DataFrame(residuos_df), use_container_width=True)
                 except Exception as e:
                     st.error(f"Error crítico en la ejecución numérica: {str(e)}")
 
