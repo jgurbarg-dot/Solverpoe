@@ -201,7 +201,6 @@ if parsed_eqs:
           break
 
       if not found_step and remaining_eqs:
-        # En lugar de fallar si no es estrictamente cuadrado, agrupamos el bloque residual completo
         comp_eqs = [eq[0] for eq in remaining_eqs]
         comp_vars_set = set()
         for _, eq in remaining_eqs:
@@ -211,13 +210,6 @@ if parsed_eqs:
         comp_vars = list(comp_vars_set)
 
         if comp_eqs and comp_vars:
-          eq_names = ", ".join(comp_eqs[:5]) + (
-              "..." if len(comp_eqs) > 5 else ""
-          )
-          var_names = ", ".join(comp_vars[:5]) + (
-              "..." if len(comp_vars) > 5 else ""
-          )
-
           seq_steps.append({
               "Bloque": f"Subsistema Global ({len(comp_eqs)} eqs)",
               "Resuelve": f"{len(comp_vars)} variables acopladas",
@@ -258,7 +250,9 @@ if parsed_eqs:
   solve_success = False
 
   if ejecutar_solver:
-    with st.spinner(f"Calculando valores usando {metodo_elegido}..."):
+    with st.spinner(
+        f"Calculando valores usando el método de {metodo_elegido}..."
+    ):
       eqs_for_solve = [eq[1].subs(known_vars) for eq in parsed_eqs]
       vars_to_solve = [s for s in all_symbols if s not in known_vars]
 
@@ -273,9 +267,15 @@ if parsed_eqs:
               return [res]
             return np.array(res, dtype=float).flatten()
 
-          # Estimación inicial inteligente (evita ceros en divisiones y respeta fracciones)
-          x0 = [0.2 if "x" in s.name else 50.0 for s in vars_to_solve]
-          sol = root(sistema_residual, x0, method="hybr", options={"maxiter": 1000})
+          # Estimación inicial inteligente y robusta
+          x0 = [0.2 if "x" in s.name else 10.0 for s in vars_to_solve]
+
+          # Intento 1: Método hybr
+          sol = root(sistema_residual, x0, method="hybr", options={"maxiter": 5000})
+
+          # Intento 2: Si falla hybr, usamos Levenberg-Marquardt (lm) que es ultra potente
+          if not sol.success:
+            sol = root(sistema_residual, x0, method="lm", options={"maxiter": 5000})
 
           if sol.success:
             for i, sym in enumerate(vars_to_solve):
@@ -284,9 +284,9 @@ if parsed_eqs:
             st.success("¡Sistema resuelto numéricamente con éxito!")
           else:
             st.warning(
-                "El método numérico no convergió por completo con la"
-                " estimación inicial actual. Intenta ajustar los valores"
-                " conocidos (Datos)."
+                "El método numérico no convergió. Comprueba que el sistema tenga"
+                " Grados de Libertad (GL) igual a 0 y que los datos ingresados"
+                " tengan sentido físico."
             )
         except Exception as e:
           st.error(f"Error crítico en la ejecución numérica: {str(e)}")
