@@ -1,4 +1,3 @@
-
 import streamlit as st
 import sympy as sp
 import pandas as pd
@@ -27,8 +26,7 @@ raw_eqs = st.sidebar.text_area(
     height=250
 )
 
-# Parseo protegido por caché para no recalcular 300 strings en cada clic
-@st.cache_resource
+# Parseo de ecuaciones sin caché para evitar errores con SymPy
 def parse_equations(raw_text):
     eq_lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
     parsed = []
@@ -98,7 +96,6 @@ if parsed_eqs:
     # =========================================================================
     # MOTOR 1: MODO ITERACIÓN (Corte / Rasgado con ItVer) - Optimizado
     # =========================================================================
-    @st.cache_resource
     def engine_iteracion(parsed, known_dict):
         simulated_subs = known_dict.copy()
         remaining_eqs = parsed.copy()
@@ -109,14 +106,13 @@ if parsed_eqs:
         while remaining_eqs:
             found_step = False
             for idx, (eq_name, eq) in enumerate(remaining_eqs):
-                # Evaluación rápida por sets en lugar de sustitución pesada sympy
                 free_vars = [s for s in eq.free_symbols if s not in simulated_subs]
                 
                 if len(free_vars) == 1:
                     target_var = free_vars[0]
                     seq_steps.append({"Bloque": eq_name, "Resuelve": target_var.name, "Tipo": "Secuencial", "POE_Format": f"{eq_name}\n1  {target_var.name}"})
                     memoria.append(f"**Paso {step}:** De `{eq_name}` se despeja de forma directa `{target_var.name}`.")
-                    simulated_subs[target_var] = 1.0 # Valor dummy para secuenciación rápida
+                    simulated_subs[target_var] = 1.0 
                     remaining_eqs.pop(idx)
                     found_step = True
                     step += 1
@@ -132,7 +128,6 @@ if parsed_eqs:
                     break
 
             if not found_step and remaining_eqs:
-                # Detección de variable de corte (Tearing)
                 rem_vars_counts = {}
                 for _, eq in remaining_eqs:
                     for v in eq.free_symbols:
@@ -151,9 +146,8 @@ if parsed_eqs:
         return seq_steps, memoria, tear_counter
 
     # =========================================================================
-    # MOTOR 1B: MODO SUBSISTEMAS - Optimizado con Grafos (Cero itertools)
+    # MOTOR 1B: MODO SUBSISTEMAS - Optimizado con Grafos
     # =========================================================================
-    @st.cache_resource
     def engine_subsistemas(parsed, known_dict):
         simulated_subs = known_dict.copy()
         remaining_eqs = parsed.copy()
@@ -164,7 +158,6 @@ if parsed_eqs:
         while remaining_eqs:
             found_step = False
             
-            # 1. Resolver directas 1x1 primero (Heurística rápida)
             for idx, (eq_name, eq) in enumerate(remaining_eqs):
                 free_vars = [s for s in eq.free_symbols if s not in simulated_subs]
                 if len(free_vars) == 1:
@@ -177,9 +170,7 @@ if parsed_eqs:
                     step += 1
                     break
 
-            # 2. Análisis Topológico de Bloques (Sustituye itertools)
             if not found_step and remaining_eqs:
-                # Crear grafo bipartito Ecuación <-> Variable
                 B = nx.Graph()
                 for name, eq in remaining_eqs:
                     B.add_node(name, bipartite=0)
@@ -188,10 +179,8 @@ if parsed_eqs:
                         B.add_node(v.name, bipartite=1)
                         B.add_edge(name, v.name)
                 
-                # Obtener componentes conexos (Subsistemas aislados)
                 components = list(nx.connected_components(B))
                 
-                # Procesar el primer componente válido como bloque
                 for comp in components:
                     comp_eqs = [n for n in comp if n.startswith("Ec")]
                     comp_vars = [n for n in comp if not n.startswith("Ec")]
@@ -215,7 +204,6 @@ if parsed_eqs:
                         })
                         memoria.append(f"**Paso {step}:** Acoplamiento resuelto por Grafos. Subsistema de `{eq_names}` para `{var_names}`.")
                         
-                        # Actualizar estado
                         for v_name in comp_vars:
                             simulated_subs[sp.Symbol(v_name)] = 1.0
                         remaining_eqs = [eq for eq in remaining_eqs if eq[0] not in comp_eqs]
@@ -225,17 +213,15 @@ if parsed_eqs:
                         step += 1
                         break
                 
-                # Fallback si el grafo no cuadra perfectamente
                 if not found_step:
-                    memoria.append(f"**Paso {step}:** ⚠ El grafo residual no es cuadrado. Se requiere análisis avanzado (Sobredeterminado o Subdeterminado local).")
+                    memoria.append(f"**Paso {step}:** ⚠ El grafo residual no es cuadrado.")
                     break
 
         return seq_steps, memoria
 
     # =========================================================================
-    # MOTOR 2: RESOLUCIÓN MATEMÁTICA EXACTA (Bloqueada por Caché)
+    # MOTOR 2: RESOLUCIÓN MATEMÁTICA EXACTA
     # =========================================================================
-    @st.cache_resource
     def engine_solve(parsed, known_dict, is_dof_zero):
         real_subs = known_dict.copy()
         calc_success = False
@@ -243,7 +229,6 @@ if parsed_eqs:
             eqs_for_solve = [eq[1].subs(real_subs) for eq in parsed]
             vars_to_solve = [s for s in all_symbols if s not in real_subs]
             try:
-                # Timeout implícito manejado por el usuario (puede demorar en sistemas masivos)
                 sols = sp.solve(eqs_for_solve, vars_to_solve, dict=True)
                 if sols:
                     for var_sym, val_expr in sols[0].items():
