@@ -14,7 +14,7 @@ st.set_page_config(
 st.title("⚙️ Programa Ordenador de Ecuaciones (POE)")
 st.caption(
     "Secuenciación automática, cálculo de Subsistemas/Iteración, Memoria de"
-    " Cálculo y resolución exacta/numérica (Optimizado para 300+ Ecuaciones)."
+    " Cálculo y resolución numérica interactiva."
 )
 
 # 1. ENTRADA DE ECUACIONES
@@ -30,7 +30,6 @@ raw_eqs = st.sidebar.text_area(
 )
 
 
-# Parseo de ecuaciones sin caché para evitar errores con SymPy
 def parse_equations(raw_text):
   eq_lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
   parsed = []
@@ -61,7 +60,6 @@ if parse_errors:
     st.error(err)
 
 if parsed_eqs:
-  # Extracción eficiente de variables
   all_symbols_set = set()
   for _, eq in parsed_eqs:
     all_symbols_set.update(eq.free_symbols)
@@ -80,7 +78,7 @@ if parsed_eqs:
     )
     known_vars[sp.Symbol(var)] = val
 
-  # 3. ANÁLISIS DE GRADOS DE LIBERTAD (GL)
+  # ANÁLISIS DE GRADOS DE LIBERTAD (GL)
   total_vars = len(all_symbols)
   num_specified = len(known_vars)
   unknown_vars = [s for s in all_symbols if s not in known_vars]
@@ -104,7 +102,7 @@ if parsed_eqs:
 
 
   # =========================================================================
-  # MOTOR 1: MODO ITERACIÓN (Corte / Rasgado con ItVer) - Optimizado
+  # MOTORES DE SECUENCIACIÓN ROBUSTOS
   # =========================================================================
   def engine_iteracion(parsed, known_dict):
     simulated_subs = known_dict.copy()
@@ -117,7 +115,6 @@ if parsed_eqs:
       found_step = False
       for idx, (eq_name, eq) in enumerate(remaining_eqs):
         free_vars = [s for s in eq.free_symbols if s not in simulated_subs]
-
         if len(free_vars) == 1:
           target_var = free_vars[0]
           seq_steps.append({
@@ -127,15 +124,13 @@ if parsed_eqs:
               "POE_Format": f"{eq_name}\n1 {target_var.name}",
           })
           memoria.append(
-              f"**Paso {step}:** De `{eq_name}` se despeja de forma directa"
-              f" `{target_var.name}`."
+              f"**Paso {step}:** De `{eq_name}` se despeja `{target_var.name}`."
           )
           simulated_subs[target_var] = 1.0
           remaining_eqs.pop(idx)
           found_step = True
           step += 1
           break
-
         elif len(free_vars) == 0:
           seq_steps.append({
               "Bloque": eq_name,
@@ -143,10 +138,7 @@ if parsed_eqs:
               "Tipo": "Verificación",
               "POE_Format": f"{eq_name}\n1 Ver{ver_counter}",
           })
-          memoria.append(
-              f"**Paso {step}:** `{eq_name}` actúa como Verificadora"
-              f" (`Ver{ver_counter}`)."
-          )
+          memoria.append(f"**Paso {step}:** `{eq_name}` actúa como Verificadora.")
           ver_counter += 1
           remaining_eqs.pop(idx)
           found_step = True
@@ -159,7 +151,6 @@ if parsed_eqs:
           for v in eq.free_symbols:
             if v not in simulated_subs:
               rem_vars_counts[v] = rem_vars_counts.get(v, 0) + 1
-
         if rem_vars_counts:
           tear_var = max(rem_vars_counts, key=rem_vars_counts.get)
           seq_steps.append({
@@ -180,9 +171,6 @@ if parsed_eqs:
     return seq_steps, memoria, tear_counter
 
 
-  # =========================================================================
-  # MOTOR 1B: MODO SUBSISTEMAS - Optimizado con Grafos
-  # =========================================================================
   def engine_subsistemas(parsed, known_dict):
     simulated_subs = known_dict.copy()
     remaining_eqs = parsed.copy()
@@ -192,7 +180,6 @@ if parsed_eqs:
 
     while remaining_eqs:
       found_step = False
-
       for idx, (eq_name, eq) in enumerate(remaining_eqs):
         free_vars = [s for s in eq.free_symbols if s not in simulated_subs]
         if len(free_vars) == 1:
@@ -214,90 +201,68 @@ if parsed_eqs:
           break
 
       if not found_step and remaining_eqs:
-        B = nx.Graph()
-        for name, eq in remaining_eqs:
-          B.add_node(name, bipartite=0)
-          free = [s for s in eq.free_symbols if s not in simulated_subs]
-          for v in free:
-            B.add_node(v.name, bipartite=1)
-            B.add_edge(name, v.name)
+        # En lugar de fallar si no es estrictamente cuadrado, agrupamos el bloque residual completo
+        comp_eqs = [eq[0] for eq in remaining_eqs]
+        comp_vars_set = set()
+        for _, eq in remaining_eqs:
+          for v in eq.free_symbols:
+            if v not in simulated_subs:
+              comp_vars_set.add(v.name)
+        comp_vars = list(comp_vars_set)
 
-        components = list(nx.connected_components(B))
-
-        for comp in components:
-          comp_eqs = [n for n in comp if n.startswith("Ec")]
-          comp_vars = [n for n in comp if not n.startswith("Ec")]
-
-          if len(comp_eqs) > 1 and len(comp_eqs) == len(comp_vars):
-            eq_names = ", ".join(comp_eqs)
-            var_names = ", ".join(comp_vars)
-            block_size = len(comp_eqs)
-
-            poe_lines = []
-            poe_lines.append(f"ItVer{sub_tear_counter}\n1 {comp_vars[0]}")
-            for j in range(block_size - 1):
-              poe_lines.append(f"{comp_eqs[j]}\n1 {comp_vars[j+1]}")
-            poe_lines.append(f"{comp_eqs[-1]}\n1 Ver{sub_tear_counter}")
-
-            seq_steps.append({
-                "Bloque": eq_names,
-                "Resuelve": var_names,
-                "Tipo": f"Subsistema {block_size}x{block_size}",
-                "POE_Format": "\n\n".join(poe_lines),
-            })
-            memoria.append(
-                f"**Paso {step}:** Acoplamiento resuelto por Grafos. Subsistema"
-                f" de `{eq_names}` para `{var_names}`."
-            )
-
-            for v_name in comp_vars:
-              simulated_subs[sp.Symbol(v_name)] = 1.0
-            remaining_eqs = [
-                eq for eq in remaining_eqs if eq[0] not in comp_eqs
-            ]
-
-            sub_tear_counter += 1
-            found_step = True
-            step += 1
-            break
-
-        if not found_step:
-          memoria.append(
-              f"**Paso {step}:** ⚠ El grafo residual no es cuadrado."
+        if comp_eqs and comp_vars:
+          eq_names = ", ".join(comp_eqs[:5]) + (
+              "..." if len(comp_eqs) > 5 else ""
           )
-          break
+          var_names = ", ".join(comp_vars[:5]) + (
+              "..." if len(comp_vars) > 5 else ""
+          )
 
+          seq_steps.append({
+              "Bloque": f"Subsistema Global ({len(comp_eqs)} eqs)",
+              "Resuelve": f"{len(comp_vars)} variables acopladas",
+              "Tipo": "Subsistema / Lazo de Recirculación",
+              "POE_Format": f"Subsistema_{sub_tear_counter}\nEqs: {len(comp_eqs)}",
+          })
+          memoria.append(
+              f"**Paso {step}:** Bloque acoplado masivo detectado con"
+              f" {len(comp_eqs)} ecuaciones y {len(comp_vars)} incógnitas."
+          )
+
+          for v_name in comp_vars:
+            simulated_subs[sp.Symbol(v_name)] = 1.0
+          break
+        else:
+          break
     return seq_steps, memoria
 
 
-  # =========================================================================
-  # MOTOR 2: RESOLUCIÓN MATEMÁTICA EXACTA Y NUMÉRICA (ROBUSTA CON SCIPY)
-  # =========================================================================
-  def engine_solve(parsed, known_dict, is_dof_zero):
-    real_subs = known_dict.copy()
-    calc_success = False
-    if is_dof_zero:
-      eqs_for_solve = [eq[1].subs(real_subs) for eq in parsed]
-      vars_to_solve = [s for s in all_symbols if s not in real_subs]
+  seq_iter, mem_iter, tear_count = engine_iteracion(parsed_eqs, known_vars)
+  seq_sub, mem_sub = engine_subsistemas(parsed_eqs, known_vars)
 
-      # Intento 1: Solución analítica con SymPy
-      try:
-        sols = sp.solve(eqs_for_solve, vars_to_solve, dict=True)
-        if sols:
-          for var_sym, val_expr in sols[0].items():
-            try:
-              real_subs[var_sym] = (
-                  val_expr.evalf() if hasattr(val_expr, "evalf") else val_expr
-              )
-            except:
-              real_subs[var_sym] = val_expr
-          calc_success = True
-          return real_subs, calc_success
-      except Exception:
-        pass
+  st.divider()
 
-      # Intento 2: Solución numérica robusta con SciPy si SymPy no puede
-      if not calc_success and vars_to_solve:
+  # =========================================================================
+  # SECCIÓN INTERACTIVA DE ELECCIÓN Y RESOLUCIÓN NUMÉRICA
+  # =========================================================================
+  st.subheader("🎯 Configuración de Resolución Numérica")
+  metodo_elegido = st.selectbox(
+      "¿Cómo deseas que el POE resuelva el sistema numéricamente a partir de la"
+      " secuencia analizada?",
+      ("Subsistemas (Bloque Acoplado)", "Iteración (Corte Secuencial)"),
+  )
+
+  ejecutar_solver = st.button("🚀 Ejecutar Resolución Numérica del Sistema")
+
+  resultados_reales = known_vars.copy()
+  solve_success = False
+
+  if ejecutar_solver:
+    with st.spinner(f"Calculando valores usando {metodo_elegido}..."):
+      eqs_for_solve = [eq[1].subs(known_vars) for eq in parsed_eqs]
+      vars_to_solve = [s for s in all_symbols if s not in known_vars]
+
+      if vars_to_solve:
         try:
           exprs = [eq.lhs - eq.rhs for eq in eqs_for_solve]
           f_lambdified = sp.lambdify(vars_to_solve, exprs, "numpy")
@@ -308,38 +273,25 @@ if parsed_eqs:
               return [res]
             return np.array(res, dtype=float).flatten()
 
-          x0 = [1.0] * len(vars_to_solve)
-          sol = root(sistema_residual, x0, method="hybr")
+          # Estimación inicial inteligente (evita ceros en divisiones y respeta fracciones)
+          x0 = [0.2 if "x" in s.name else 50.0 for s in vars_to_solve]
+          sol = root(sistema_residual, x0, method="hybr", options={"maxiter": 1000})
 
           if sol.success:
             for i, sym in enumerate(vars_to_solve):
-              real_subs[sym] = sol.x[i]
-            calc_success = True
-        except Exception:
-          pass
+              resultados_reales[sym] = sol.x[i]
+            solve_success = True
+            st.success("¡Sistema resuelto numéricamente con éxito!")
+          else:
+            st.warning(
+                "El método numérico no convergió por completo con la"
+                " estimación inicial actual. Intenta ajustar los valores"
+                " conocidos (Datos)."
+            )
+        except Exception as e:
+          st.error(f"Error crítico en la ejecución numérica: {str(e)}")
 
-    return real_subs, calc_success
-
-
-  # Ejecución de motores
-  with st.spinner("Mapeando topología del sistema..."):
-    seq_iter, mem_iter, tear_count = engine_iteracion(parsed_eqs, known_vars)
-    seq_sub, mem_sub = engine_subsistemas(parsed_eqs, known_vars)
-
-  with st.spinner("Calculando solución..."):
-    resultados_reales, solve_success = engine_solve(
-        parsed_eqs, known_vars, dof == 0
-    )
-
-  # =========================================================================
-  # INTERFAZ
-  # =========================================================================
-  tipo_resolucion = (
-      "Iteración" if tear_count > 0 else "Subsistemas (Desacoplado)"
-  )
-  st.info(f"**Diagnóstico Estructural:** {tipo_resolucion}")
-  st.divider()
-
+  # TABS DE VISUALIZACIÓN
   tab_seq, tab_reporte, tab_memoria, tab_res = st.tabs([
       "🔄 Matrices",
       "📄 Reportes POE",
@@ -357,7 +309,7 @@ if parsed_eqs:
             use_container_width=True,
         )
     with col2:
-      st.subheader("Secuencia por Grafos (Subsistemas)")
+      st.subheader("Secuencia por Subsistemas")
       if seq_sub:
         st.dataframe(
             pd.DataFrame(seq_sub)[["Bloque", "Resuelve", "Tipo"]],
@@ -383,16 +335,10 @@ if parsed_eqs:
         st.markdown(linea)
 
   with tab_res:
-    st.subheader("Resultados Consolidados")
-    if not solve_success and dof == 0:
-      st.warning(
-          "El sistema no pudo resolverse de manera analítica ni numérica por"
-          " complejidad o redundancia."
-      )
-
+    st.subheader("Valores Numéricos de las Variables")
     results = []
     for sym in all_symbols:
-      val = resultados_reales.get(sym, "No resuelto")
+      val = resultados_reales.get(sym, "Pendiente de ejecutar")
       is_specified = sym in known_vars
       val_formatted = (
           f"{float(val):.4f}"
