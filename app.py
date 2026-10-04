@@ -1,32 +1,33 @@
+
 import networkx as nx
 import numpy as np
 import pandas as pd
-from scipy.optimize import root
+from scipy.optimize import least_squares
 import streamlit as st
 import sympy as sp
 
 st.set_page_config(
-    page_title="Programa Ordenador de Ecuaciones (POE)",
-    page_icon="⚙️",
-    layout="wide",
+  page_title="Programa Ordenador de Ecuaciones (POE)",
+  page_icon="⚙️",
+  layout="wide",
 )
 
 st.title("⚙️ Programa Ordenador de Ecuaciones (POE)")
 st.caption(
-    "Secuenciación automática, cálculo de Subsistemas/Iteración, Memoria de"
-    " Cálculo y resolución numérica interactiva."
+  "Secuenciación automática, cálculo de Subsistemas/Iteración, Memoria de"
+  " Cálculo y resolución numérica interactiva."
 )
 
 # 1. ENTRADA DE ECUACIONES
 st.sidebar.header("1. Definición del Sistema")
 default_eqs = (
-    "F1 + F2 = F3\n"
-    "F1 * 0.1 + F2 * 0.4 = F3 * x3\n"
-    "x3 + y3 = 1\n"
-    "F1 = 100"
+  "F1 + F2 = F3\n"
+  "F1 * 0.1 + F2 * 0.4 = F3 * x3\n"
+  "x3 + y3 = 1\n"
+  "F1 = 100"
 )
 raw_eqs = st.sidebar.text_area(
-    "Ingrese las ecuaciones (una por línea):", value=default_eqs, height=250
+  "Ingrese las ecuaciones (una por línea):", value=default_eqs, height=250
 )
 
 
@@ -250,9 +251,7 @@ if parsed_eqs:
   solve_success = False
 
   if ejecutar_solver:
-    with st.spinner(
-        f"Calculando valores usando el método de {metodo_elegido}..."
-    ):
+    with st.spinner(f"Calculando valores usando el método de {metodo_elegido} (con restricciones físicas)..."):
       eqs_for_solve = [eq[1].subs(known_vars) for eq in parsed_eqs]
       vars_to_solve = [s for s in all_symbols if s not in known_vars]
 
@@ -267,26 +266,45 @@ if parsed_eqs:
               return [res]
             return np.array(res, dtype=float).flatten()
 
-          # Estimación inicial inteligente y robusta
-          x0 = [0.2 if "x" in s.name else 10.0 for s in vars_to_solve]
+          # 1. ESTABLECER LÍMITES FÍSICOS (BOUNDS)
+          bounds_lower = []
+          bounds_upper = []
+          x0 = []
 
-          # Intento 1: Método hybr
-          sol = root(sistema_residual, x0, method="hybr", options={"maxiter": 5000})
+          for s in vars_to_solve:
+              nombre = s.name.lower()
+              # Si es fracción molar/másica (empieza con x, y, z)
+              if nombre.startswith('x') or nombre.startswith('y') or nombre.startswith('z'):
+                  bounds_lower.append(0.0)       # Mínimo 0
+                  bounds_upper.append(1.0)       # Máximo 1
+                  x0.append(0.5)                 # Arranca en el medio
+              # Si es un caudal (F), masa, energía, u otra variable
+              else:
+                  bounds_lower.append(0.0)       # Ningún caudal puede ser negativo
+                  bounds_upper.append(np.inf)    # Sin límite superior
+                  x0.append(50.0)                # Estimación estándar
 
-          # Intento 2: Si falla hybr, usamos Levenberg-Marquardt (lm) que es ultra potente
-          if not sol.success:
-            sol = root(sistema_residual, x0, method="lm", options={"maxiter": 5000})
+          limites = (bounds_lower, bounds_upper)
 
-          if sol.success:
+          # 2. RESOLVER CON LEAST SQUARES
+          sol = least_squares(
+              sistema_residual, 
+              x0, 
+              bounds=limites, 
+              method='trf', 
+              max_nfev=5000
+          )
+
+          if sol.cost < 1e-6:
             for i, sym in enumerate(vars_to_solve):
               resultados_reales[sym] = sol.x[i]
             solve_success = True
-            st.success("¡Sistema resuelto numéricamente con éxito!")
+            st.success("¡Sistema resuelto con éxito respetando las restricciones físicas!")
           else:
             st.warning(
-                "El método numérico no convergió. Comprueba que el sistema tenga"
-                " Grados de Libertad (GL) igual a 0 y que los datos ingresados"
-                " tengan sentido físico."
+                "El método convergió a un punto, pero hay un error residual alto. "
+                "Esto significa que los Datos ingresados podrían estar forzando un escenario "
+                "termodinámicamente imposible bajo las restricciones de no-negatividad."
             )
         except Exception as e:
           st.error(f"Error crítico en la ejecución numérica: {str(e)}")
