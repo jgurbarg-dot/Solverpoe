@@ -266,17 +266,27 @@ if parsed_eqs:
                     x0 = []
 
                     for s in vars_to_solve:
-                        nombre = s.name.lower()
-                        # Si es fracción molar/másica (empieza con x, y, z)
-                        if nombre.startswith('x') or nombre.startswith('y') or nombre.startswith('z'):
+                        nombre = s.name
+                        nombre_lower = nombre.lower()
+                        
+                        # Si es un Avance de Reacción (comienza con 'X' mayúscula)
+                        if nombre.startswith('X'):
+                            bounds_lower.append(0.0)       # El avance no puede ser negativo
+                            bounds_upper.append(np.inf)    # Sin límite superior restrictivo
+                            x0.append(1.0)                 # Estimación inicial prudente
+                            
+                        # Si es fracción molar/másica (empieza con x, y, z en minúscula)
+                        elif nombre_lower.startswith('x') or nombre_lower.startswith('y') or nombre_lower.startswith('z'):
                             bounds_lower.append(0.0)       # Mínimo 0
                             bounds_upper.append(1.0)       # Máximo 1
                             x0.append(0.5)                 # Arranca en el medio
+                            
                         # Si es un caudal, masa, volumen o moles (f, m, w, v, n, l)
-                        elif nombre.startswith('f') or nombre.startswith('m') or nombre.startswith('w') or nombre.startswith('v') or nombre.startswith('n') or nombre.startswith('l'):
+                        elif nombre_lower.startswith('f') or nombre_lower.startswith('m') or nombre_lower.startswith('w') or nombre_lower.startswith('v') or nombre_lower.startswith('n') or nombre_lower.startswith('l'):
                             bounds_lower.append(0.0)       # Ningún caudal puede ser negativo
                             bounds_upper.append(np.inf)    # Sin límite superior
                             x0.append(50.0)                # Estimación estándar
+                            
                         # Otras variables genéricas (Temperaturas, Entalpías, Calor, etc.)
                         else:
                             bounds_lower.append(-np.inf)   # Permite valores negativos
@@ -310,7 +320,7 @@ if parsed_eqs:
                             "termodinámicamente imposible bajo las restricciones dadas."
                         )
                         
-                        # NUEVO: Diagnóstico de ecuaciones fallidas
+                        # Diagnóstico de ecuaciones fallidas
                         st.error("🔍 **Diagnóstico de Fallo en el Balance:**")
                         st.write("Las siguientes ecuaciones no lograron igualarse a cero (lado izquierdo - lado derecho):")
                         
